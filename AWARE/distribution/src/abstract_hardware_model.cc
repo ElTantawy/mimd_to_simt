@@ -619,6 +619,7 @@ simt_splits_table::simt_splits_table( unsigned wid, unsigned warpSize, const sha
 
 void simt_splits_table::reset()
 {
+	m_num_entries = 0;
     m_splits_table.clear();
     for(unsigned i=0; i<MAX_VIRTUAL_ST_ENTRIES; i++){
     	m_splits_table[i]=simt_splits_table_entry();
@@ -1296,6 +1297,7 @@ simt_reconvergence_table::simt_reconvergence_table( unsigned wid,  unsigned warp
 
 void simt_reconvergence_table::reset()
 {
+	m_num_entries = 0;
 	m_recvg_table.clear();
     while(!m_invalid_entries.empty()) m_invalid_entries.pop();
     for(int i=0; i<MAX_VIRTUAL_RT_ENTRIES; i++){
