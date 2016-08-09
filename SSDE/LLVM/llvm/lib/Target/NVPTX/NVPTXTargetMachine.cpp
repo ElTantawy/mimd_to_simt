@@ -52,6 +52,7 @@ void initializeGenericToNVVMPass(PassRegistry&);
 void initializeNVPTXAssignValidGlobalNamesPass(PassRegistry&);
 void initializeNVPTXFavorNonGenericAddrSpacesPass(PassRegistry &);
 void initializeNVPTXLowerStructArgsPass(PassRegistry &);
+void initializeNVPTXLowerKernelArgsPass(PassRegistry &);
 }
 
 extern "C" void LLVMInitializeNVPTXTarget() {
@@ -67,6 +68,7 @@ extern "C" void LLVMInitializeNVPTXTarget() {
   initializeNVPTXFavorNonGenericAddrSpacesPass(
     *PassRegistry::getPassRegistry());
   initializeNVPTXLowerStructArgsPass(*PassRegistry::getPassRegistry());
+  initializeNVPTXLowerKernelArgsPass(*PassRegistry::getPassRegistry());
 }
 
 NVPTXTargetMachine::NVPTXTargetMachine(const Target &T, StringRef TT,
@@ -148,6 +150,7 @@ void NVPTXPassConfig::addIRPasses() {
   TargetPassConfig::addIRPasses();
   addPass(createNVPTXAssignValidGlobalNamesPass());
   addPass(createGenericToNVVMPass());
+  addPass(createNVPTXLowerKernelArgsPass(&getNVPTXTargetMachine()));
   addPass(createNVPTXFavorNonGenericAddrSpacesPass());
   addPass(createSeparateConstOffsetFromGEPPass());
   // The SeparateConstOffsetFromGEP pass creates variadic bases that can be used

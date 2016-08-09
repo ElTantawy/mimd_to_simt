@@ -32,6 +32,8 @@ extern "C" {
  * @{
  */
 
+//void LLVMAddSIMDDeadlockEliminationPass(LLVMPassManagerRef PM);
+
 /** See llvm::createAggressiveDCEPass function. */
 void LLVMAddAggressiveDCEPass(LLVMPassManagerRef PM);
 

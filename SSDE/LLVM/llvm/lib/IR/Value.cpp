@@ -23,6 +23,7 @@
 #include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/LeakDetector.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Operator.h"
@@ -428,6 +429,26 @@ static Value *stripPointerCastsAndOffsets(Value *V) {
   return V;
 }
 } // namespace
+
+
+Value *Value::stripPointerMemorySpaceConversion(){
+	  if (!getType()->isPointerTy())
+	    return this;
+	  if(dyn_cast<CallInst>(this)){
+		  CallInst * cInst = dyn_cast<CallInst>(this);
+		  if(cInst->isIntrinsicCall()){
+			  if(cInst->getCalledFunction()->getIntrinsicID()==Intrinsic::nvvm_ptr_gen_to_global
+			  || cInst->getCalledFunction()->getIntrinsicID()==Intrinsic::nvvm_ptr_gen_to_shared
+			  || cInst->getCalledFunction()->getIntrinsicID()==Intrinsic::nvvm_ptr_gen_to_local
+			  || cInst->getCalledFunction()->getIntrinsicID()==Intrinsic::nvvm_ptr_global_to_gen
+			  || cInst->getCalledFunction()->getIntrinsicID()==Intrinsic::nvvm_ptr_shared_to_gen
+			  || cInst->getCalledFunction()->getIntrinsicID()==Intrinsic::nvvm_ptr_local_to_gen){
+				  return cInst->getArgOperand(0);
+			  }
+		  }
+	  }
+	  return this;
+}
 
 Value *Value::stripPointerCasts() {
   return stripPointerCastsAndOffsets<PSK_ZeroIndicesAndAliases>(this);

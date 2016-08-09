@@ -159,10 +159,17 @@ public:
   /// cache.
   ///
   unsigned getIntrinsicID() const LLVM_READONLY;
-  bool isIntrinsic() const { return getName().startswith("llvm."); }
-  bool isBarrier() const { return getName().equals("barrier");}
-  bool isThreadID() const { return getName().equals("get_global_id");}
-  bool isAtomic() const { return getName().contains("atomic_"); }
+  bool isIntrinsic() const { return getName().startswith("llvm.") || getName().startswith("__nvvm_") || (getName().startswith("omp_") && !getName().equals("omp_set_lock") && !getName().equals("omp_unset_lock") && !getName().equals("omp_test_lock")) || getName().startswith("__nv_") || getName().startswith("__ftexfetchi") || getName().startswith("__kmpc"); }
+  bool isBarrier() const { return getName().equals("llvm.cuda.syncthreads") || getName().equals("llvm.ptx.bar.sync") || getName().equals("llvm.nvvm.barrier0");}
+  bool isThreadID() const { return getName().startswith(" llvm.ptx.read.");}
+  bool isAtomic() const { return getName().contains("llvm.nvvm.atomic."); }
+  bool isMalloc() const { return getName().startswith("malloc"); }
+
+  /* TODO: Add all native calls that represent loads and stores equivalents */
+  bool isMemCpy() const { return getName().startswith("llvm.memcpy."); }
+  bool isAtomicLoadInc() const { return getName().startswith("llvm.nvvm.atomic.load.inc"); }
+
+  void getReturningBlocks(SmallVectorImpl<const BasicBlock *> * ReturningBlocks) const;
 
   /// getCallingConv()/setCallingConv(CC) - These method get and set the
   /// calling convention of this function.  The enum values for the known

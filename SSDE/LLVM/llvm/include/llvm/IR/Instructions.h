@@ -1488,7 +1488,7 @@ public:
 
   bool isIntrinsicCall() const {
           Function * F = getCalledFunction();
-          return F->isIntrinsic();
+          return (F->isIntrinsic());
   }
 
   bool isBarrierCall() const {
@@ -1504,6 +1504,22 @@ public:
   bool isThreadIDCall() const {
           Function * F = getCalledFunction();
           return F->isThreadID();
+  }
+
+  bool isMemCpy() const {
+          Function * F = getCalledFunction();
+          return F->isMemCpy();
+  }
+
+  bool isMalloc() const {
+          Function * F = getCalledFunction();
+          return F->isMalloc();
+  }
+
+
+  bool isAtomicLoadInc() const {
+          Function * F = getCalledFunction();
+          return F->isAtomicLoadInc();
   }
 
   // Methods for support type inquiry through isa, cast, and dyn_cast:

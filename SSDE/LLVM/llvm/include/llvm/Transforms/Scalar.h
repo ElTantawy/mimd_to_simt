@@ -21,12 +21,16 @@ namespace llvm {
 
 class BasicBlockPass;
 class FunctionPass;
+class ModulePass;
 class Pass;
 class GetElementPtrInst;
 class PassInfo;
 class TerminatorInst;
 class TargetLowering;
 class TargetMachine;
+
+//ModulePass *createSIMDDeadlockEliminationPass();
+
 
 //===----------------------------------------------------------------------===//
 //

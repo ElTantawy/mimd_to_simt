@@ -24,6 +24,8 @@ namespace llvm {
   class PassInfo;
   class LibCallInfo;
 
+  //ModulePass *createSIMDDeadlockAnalysisPass();
+
   //===--------------------------------------------------------------------===//
   //
   // createGlobalsModRefPass - This pass provides alias and mod/ref info for

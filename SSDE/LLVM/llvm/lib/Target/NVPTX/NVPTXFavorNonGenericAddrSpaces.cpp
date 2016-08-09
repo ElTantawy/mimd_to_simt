@@ -10,39 +10,60 @@
 // When a load/store accesses the generic address space, checks whether the
 // address is casted from a non-generic address space. If so, remove this
 // addrspacecast because accessing non-generic address spaces is typically
-// faster. Besides seeking addrspacecasts, this optimization also traces into
-// the base pointer of a GEP.
+// faster. Besides removing addrspacecasts directly used by loads/stores, this
+// optimization also recursively traces into a GEP's pointer operand and a
+// bitcast's source to find more eliminable addrspacecasts.
 //
 // For instance, the code below loads a float from an array allocated in
 // addrspace(3).
 //
-// %0 = addrspacecast [10 x float] addrspace(3)* @a to [10 x float]*
-// %1 = gep [10 x float]* %0, i64 0, i64 %i
-// %2 = load float* %1 ; emits ld.f32
+//   %0 = addrspacecast [10 x float] addrspace(3)* @a to [10 x float]*
+//   %1 = gep [10 x float]* %0, i64 0, i64 %i
+//   %2 = bitcast float* %1 to i32*
+//   %3 = load i32* %2 ; emits ld.u32
 //
-// First, function hoistAddrSpaceCastFromGEP reorders the addrspacecast
-// and the GEP to expose more optimization opportunities to function
+// First, function hoistAddrSpaceCastFrom reorders the addrspacecast, the GEP,
+// and the bitcast to expose more optimization opportunities to function
 // optimizeMemoryInst. The intermediate code looks like:
 //
-// %0 = gep [10 x float] addrspace(3)* @a, i64 0, i64 %i
-// %1 = addrspacecast float addrspace(3)* %0 to float*
-// %2 = load float* %1 ; still emits ld.f32, but will be optimized shortly
+//   %0 = gep [10 x float] addrspace(3)* @a, i64 0, i64 %i
+//   %1 = bitcast float addrspace(3)* %0 to i32 addrspace(3)*
+//   %2 = addrspacecast i32 addrspace(3)* %1 to i32*
+//   %3 = load i32* %2 ; still emits ld.u32, but will be optimized shortly
 //
 // Then, function optimizeMemoryInstruction detects a load from addrspacecast'ed
 // generic pointers, and folds the load and the addrspacecast into a load from
 // the original address space. The final code looks like:
 //
-// %0 = gep [10 x float] addrspace(3)* @a, i64 0, i64 %i
-// %2 = load float addrspace(3)* %0 ; emits ld.shared.f32
+//   %0 = gep [10 x float] addrspace(3)* @a, i64 0, i64 %i
+//   %1 = bitcast float addrspace(3)* %0 to i32 addrspace(3)*
+//   %3 = load i32 addrspace(3)* %1 ; emits ld.shared.f32
 //
 // This pass may remove an addrspacecast in a different BB. Therefore, we
 // implement it as a FunctionPass.
+//
+// TODO:
+// The current implementation doesn't handle PHINodes. Eliminating
+// addrspacecasts used by PHINodes is trickier because PHINodes can introduce
+// loops in data flow. For example,
+//
+//     %generic.input = addrspacecast float addrspace(3)* %input to float*
+//   loop:
+//     %y = phi [ %generic.input, %y2 ]
+//     %y2 = getelementptr %y, 1
+//     %v = load %y2
+//     br ..., label %loop, ...
+//
+// Marking %y2 shared depends on marking %y shared, but %y also data-flow
+// depends on %y2. We probably need an iterative fix-point algorithm on handle
+// this case.
 //
 //===----------------------------------------------------------------------===//
 
 #include "NVPTX.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/Support/CommandLine.h"
 
@@ -62,17 +83,34 @@ class NVPTXFavorNonGenericAddrSpaces : public FunctionPass {
 public:
   static char ID;
   NVPTXFavorNonGenericAddrSpaces() : FunctionPass(ID) {}
-
   bool runOnFunction(Function &F) override;
 
+private:
   /// Optimizes load/store instructions. Idx is the index of the pointer operand
   /// (0 for load, and 1 for store). Returns true if it changes anything.
   bool optimizeMemoryInstruction(Instruction *I, unsigned Idx);
-  /// Transforms "gep (addrspacecast X), indices" into "addrspacecast (gep X,
-  /// indices)".  This reordering exposes to optimizeMemoryInstruction more
-  /// optimization opportunities on loads and stores. Returns true if it changes
-  /// the program.
-  bool hoistAddrSpaceCastFromGEP(GEPOperator *GEP);
+  /// Recursively traces into a GEP's pointer operand or a bitcast's source to
+  /// find an eliminable addrspacecast, and hoists that addrspacecast to the
+  /// outermost level. For example, this function transforms
+  ///   bitcast(gep(gep(addrspacecast(X))))
+  /// to
+  ///   addrspacecast(bitcast(gep(gep(X)))).
+  ///
+  /// This reordering exposes to optimizeMemoryInstruction more
+  /// optimization opportunities on loads and stores.
+  ///
+  /// If this function succesfully hoists an eliminable addrspacecast or V is
+  /// already such an addrspacecast, it returns the transformed value (which is
+  /// guaranteed to be an addrspacecast); otherwise, it returns nullptr.
+  Value *hoistAddrSpaceCastFrom(Value *V, std::vector<Value *>* Visited,int Depth = 0);
+  /// Helper function for GEPs.
+  Value *hoistAddrSpaceCastFromGEP(GEPOperator *GEP, std::vector<Value *>* Visited, int Depth);
+  /// Helper function for bitcasts.
+  Value *hoistAddrSpaceCastFromBitCast(BitCastOperator *BC, std::vector<Value *>* Visited, int Depth);
+  /// Helper function for phinodes.
+  Value *hoistAddrSpaceCastFromPHINode(PHINode *PHI, std::vector<Value *>* Visited,int Depth);
+
+
 };
 }
 
@@ -85,11 +123,12 @@ INITIALIZE_PASS(NVPTXFavorNonGenericAddrSpaces, "nvptx-favor-non-generic",
                 "Remove unnecessary non-generic-to-generic addrspacecasts",
                 false, false)
 
-// Decides whether removing Cast is valid and beneficial. Cast can be an
-// instruction or a constant expression.
-static bool IsEliminableAddrSpaceCast(Operator *Cast) {
-  // Returns false if not even an addrspacecast.
-  if (Cast->getOpcode() != Instruction::AddrSpaceCast)
+// Decides whether V is an addrspacecast and shortcutting V in load/store is
+// valid and beneficial.
+static bool isEliminableAddrSpaceCast(Value *V) {
+  // Returns false if V is not even an addrspacecast.
+  Operator *Cast = dyn_cast<Operator>(V);
+  if (Cast == nullptr || Cast->getOpcode() != Instruction::AddrSpaceCast)
     return false;
 
   Value *Src = Cast->getOperand(0);
@@ -108,48 +147,154 @@ static bool IsEliminableAddrSpaceCast(Operator *Cast) {
           DestTy->getAddressSpace() == AddressSpace::ADDRESS_SPACE_GENERIC);
 }
 
-bool NVPTXFavorNonGenericAddrSpaces::hoistAddrSpaceCastFromGEP(
-    GEPOperator *GEP) {
-  Operator *Cast = dyn_cast<Operator>(GEP->getPointerOperand());
-  if (!Cast)
-    return false;
+Value *NVPTXFavorNonGenericAddrSpaces::hoistAddrSpaceCastFromGEP(
+    GEPOperator *GEP,  std::vector<Value *>* Visited, int Depth) {
+  Visited->push_back(dyn_cast<Value>(GEP));
+  Value *NewOperand =
+      hoistAddrSpaceCastFrom(GEP->getPointerOperand(), Visited, Depth + 1);
+  if (NewOperand == nullptr)
+    return nullptr;
 
-  if (!IsEliminableAddrSpaceCast(Cast))
-    return false;
+  // hoistAddrSpaceCastFrom returns an eliminable addrspacecast or nullptr.
+  assert(isEliminableAddrSpaceCast(NewOperand));
+  Operator *Cast = cast<Operator>(NewOperand);
 
   SmallVector<Value *, 8> Indices(GEP->idx_begin(), GEP->idx_end());
+  Value *NewASC;
   if (Instruction *GEPI = dyn_cast<Instruction>(GEP)) {
-    // %1 = gep (addrspacecast X), indices
+    // GEP = gep (addrspacecast X), indices
     // =>
-    // %0 = gep X, indices
-    // %1 = addrspacecast %0
-    GetElementPtrInst *NewGEPI = GetElementPtrInst::Create(Cast->getOperand(0),
-                                                           Indices,
-                                                           GEP->getName(),
-                                                           GEPI);
-    NewGEPI->setIsInBounds(GEP->isInBounds());
-    GEP->replaceAllUsesWith(
-        new AddrSpaceCastInst(NewGEPI, GEP->getType(), "", GEPI));
+    // NewGEP = gep X, indices
+    // NewASC = addrspacecast NewGEP
+    GetElementPtrInst *NewGEP = GetElementPtrInst::Create(Cast->getOperand(0), Indices,
+        "", GEPI);
+    NewGEP->setIsInBounds(GEP->isInBounds());
+    NewASC = new AddrSpaceCastInst(NewGEP, GEP->getType(), "", GEPI);
+    NewASC->takeName(GEP);
+    // Without RAUWing GEP, the compiler would visit GEP again and emit
+    // redundant instructions. This is exercised in test @rauw in
+    // access-non-generic.ll.
+    GEP->replaceAllUsesWith(NewASC);
   } else {
     // GEP is a constant expression.
-    Constant *NewGEPCE = ConstantExpr::getGetElementPtr(
-        cast<Constant>(Cast->getOperand(0)),
-        Indices,
-        GEP->isInBounds());
-    GEP->replaceAllUsesWith(
-        ConstantExpr::getAddrSpaceCast(NewGEPCE, GEP->getType()));
+    Constant *NewGEP = ConstantExpr::getGetElementPtr(
+    		cast<Constant>(Cast->getOperand(0)),
+    		    		Indices,
+    		    		GEP->isInBounds());
+    NewASC = ConstantExpr::getAddrSpaceCast(NewGEP, GEP->getType());
   }
+  return NewASC;
+}
 
-  return true;
+Value *NVPTXFavorNonGenericAddrSpaces::hoistAddrSpaceCastFromBitCast(
+    BitCastOperator *BC,  std::vector<Value *>* Visited, int Depth) {
+  Visited->push_back(dyn_cast<Value>(BC));
+  Value *NewOperand = hoistAddrSpaceCastFrom(BC->getOperand(0),Visited, Depth + 1);
+  if (NewOperand == nullptr)
+    return nullptr;
+
+  // hoistAddrSpaceCastFrom returns an eliminable addrspacecast or nullptr.
+  assert(isEliminableAddrSpaceCast(NewOperand));
+  Operator *Cast = cast<Operator>(NewOperand);
+
+  // Cast  = addrspacecast Src
+  // BC    = bitcast Cast
+  //   =>
+  // Cast' = bitcast Src
+  // BC'   = addrspacecast Cast'
+  Value *Src = Cast->getOperand(0);
+  Type *TypeOfNewCast =
+      PointerType::get(BC->getType()->getPointerElementType(),
+                       Src->getType()->getPointerAddressSpace());
+  Value *NewBC;
+  if (BitCastInst *BCI = dyn_cast<BitCastInst>(BC)) {
+    Value *NewCast = new BitCastInst(Src, TypeOfNewCast, "", BCI);
+    NewBC = new AddrSpaceCastInst(NewCast, BC->getType(), "", BCI);
+    NewBC->takeName(BC);
+    // Without RAUWing BC, the compiler would visit BC again and emit
+    // redundant instructions. This is exercised in test @rauw in
+    // access-non-generic.ll.
+    BC->replaceAllUsesWith(NewBC);
+  } else {
+    // BC is a constant expression.
+    Constant *NewCast =
+        ConstantExpr::getBitCast(cast<Constant>(Src), TypeOfNewCast);
+    NewBC = ConstantExpr::getAddrSpaceCast(NewCast, BC->getType());
+  }
+  return NewBC;
+}
+
+
+
+
+
+Value *NVPTXFavorNonGenericAddrSpaces::hoistAddrSpaceCastFromPHINode(
+    PHINode *PH, std::vector<Value *> * Visited,int Depth) {
+	  Visited->push_back(dyn_cast<Value>(PH));
+	  Type * newPHIType = nullptr;
+	  for(unsigned i=0; i<PH->getNumIncomingValues();i++){
+		  if(std::find(Visited->begin(),Visited->end(),PH->getIncomingValue(i))!=Visited->end()) continue;
+			  Value *NewOperand = hoistAddrSpaceCastFrom(PH->getIncomingValue(i),Visited, Depth + 1);
+			  if (NewOperand == nullptr)
+				  return nullptr;
+			  newPHIType = dyn_cast<Operator>(NewOperand)->getOperand(0)->getType();
+	  }
+	  if(newPHIType==nullptr){
+		  return nullptr;
+	  }
+	  Value *NewASC;
+	  PHINode *NewPH = PHINode::Create(newPHIType, PH->getNumIncomingValues(),"", PH);
+	  for(unsigned i=0; i<PH->getNumIncomingValues();i++){
+		  if(std::find(Visited->begin(),Visited->end(),PH->getIncomingValue(i))!=Visited->end()) continue;
+		  Value *NewOperand = hoistAddrSpaceCastFrom(PH->getIncomingValue(i),Visited, Depth + 1);
+		  Operator *ASC = dyn_cast<Operator>(NewOperand);
+		  NewPH->addIncoming(ASC->getOperand(0),PH->getIncomingBlock(i));
+	  }
+	  NewASC = new AddrSpaceCastInst(NewPH, PH->getType(), "", PH->getParent()->getFirstNonPHI());
+	  NewASC->takeName(PH);
+	  PH->replaceAllUsesWith(NewASC);
+
+	  NewASC->dump();
+	  PH->getParent()->dump();
+	  return NewASC;
+}
+
+
+
+
+Value *NVPTXFavorNonGenericAddrSpaces::hoistAddrSpaceCastFrom(Value *V,
+		 std::vector<Value *>* Visited, int Depth) {
+  // Returns V if V is already an eliminable addrspacecast.
+  if (isEliminableAddrSpaceCast(V))
+    return V;
+
+  // Limit the depth to prevent this recursive function from running too long.
+  const int MaxDepth = 20;
+  if (Depth >= MaxDepth)
+    return nullptr;
+
+  // If V is a GEP or bitcast, hoist the addrspacecast if any from its pointer
+  // operand. This enables optimizeMemoryInstruction to shortcut addrspacecasts
+  // that are not directly used by the load/store.
+  if (GEPOperator *GEP = dyn_cast<GEPOperator>(V))
+    return hoistAddrSpaceCastFromGEP(GEP, Visited, Depth);
+
+  if (BitCastOperator *BC = dyn_cast<BitCastOperator>(V))
+    return hoistAddrSpaceCastFromBitCast(BC, Visited, Depth);
+
+  if (PHINode *PH = dyn_cast<PHINode>(V))
+    return hoistAddrSpaceCastFromPHINode(PH, Visited, Depth);
+
+  return nullptr;
 }
 
 bool NVPTXFavorNonGenericAddrSpaces::optimizeMemoryInstruction(Instruction *MI,
                                                                unsigned Idx) {
-  // If the pointer operand is a GEP, hoist the addrspacecast if any from the
-  // GEP to expose more optimization opportunites.
-  if (GEPOperator *GEP = dyn_cast<GEPOperator>(MI->getOperand(Idx))) {
-    hoistAddrSpaceCastFromGEP(GEP);
-  }
+  std::vector<Value*> * Visited = new std::vector<Value*>;
+  Visited->clear();
+  Value *NewOperand = hoistAddrSpaceCastFrom(MI->getOperand(Idx),Visited);
+  if (NewOperand == nullptr)
+    return false;
 
   // load/store (addrspacecast X) => load/store X if shortcutting the
   // addrspacecast is valid and can improve performance.
@@ -161,14 +306,10 @@ bool NVPTXFavorNonGenericAddrSpaces::optimizeMemoryInstruction(Instruction *MI,
   // %2 = load float addrspace(3)* %0
   //
   // Note: the addrspacecast can also be a constant expression.
-  if (Operator *Cast = dyn_cast<Operator>(MI->getOperand(Idx))) {
-    if (IsEliminableAddrSpaceCast(Cast)) {
-      MI->setOperand(Idx, Cast->getOperand(0));
-      return true;
-    }
-  }
-
-  return false;
+  assert(isEliminableAddrSpaceCast(NewOperand));
+  Operator *ASC = dyn_cast<Operator>(NewOperand);
+  MI->setOperand(Idx, ASC->getOperand(0));
+  return true;
 }
 
 bool NVPTXFavorNonGenericAddrSpaces::runOnFunction(Function &F) {
@@ -180,13 +321,18 @@ bool NVPTXFavorNonGenericAddrSpaces::runOnFunction(Function &F) {
     for (BasicBlock::iterator I = B->begin(), IE = B->end(); I != IE; ++I) {
       if (isa<LoadInst>(I)) {
         // V = load P
-        Changed |= optimizeMemoryInstruction(I, 0);
+    	Changed |= optimizeMemoryInstruction(I, 0);
       } else if (isa<StoreInst>(I)) {
         // store V, P
-        Changed |= optimizeMemoryInstruction(I, 1);
+    	Changed |= optimizeMemoryInstruction(I, 1);
+      } else if (isa<AtomicRMWInst>(I)){
+        Changed |= optimizeMemoryInstruction(I, 0);
+      } else if (isa<AtomicCmpXchgInst>(I)){
+        Changed |= optimizeMemoryInstruction(I, 0);
       }
     }
   }
+
   return Changed;
 }
 

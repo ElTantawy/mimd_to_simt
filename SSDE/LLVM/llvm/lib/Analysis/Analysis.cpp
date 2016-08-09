@@ -22,6 +22,7 @@ using namespace llvm;
 void llvm::initializeAnalysis(PassRegistry &Registry) {
   initializeAliasAnalysisAnalysisGroup(Registry);
   initializeAliasAnalysisCounterPass(Registry);
+  initializeSIMDDeadlockAnalysisNvidiaPass(Registry);
   initializeAAEvalPass(Registry);
   initializeAliasDebuggerPass(Registry);
   initializeAliasSetPrinterPass(Registry);

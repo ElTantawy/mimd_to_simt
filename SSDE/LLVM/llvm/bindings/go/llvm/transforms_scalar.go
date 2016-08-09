@@ -18,6 +18,7 @@ package llvm
 */
 import "C"
 
+//func (pm PassManager) AddSIMDDeadlockEliminationPass() { C.LLVMAddSIMDDeadlockEliminationPass(pm.C) }
 func (pm PassManager) AddAggressiveDCEPass()           { C.LLVMAddAggressiveDCEPass(pm.C) }
 func (pm PassManager) AddCFGSimplificationPass()       { C.LLVMAddCFGSimplificationPass(pm.C) }
 func (pm PassManager) AddDeadStoreEliminationPass()    { C.LLVMAddDeadStoreEliminationPass(pm.C) }

@@ -1,4 +1,6 @@
 add_llvm_library(LLVMAnalysis
+  SIMDDeadlockAnalysisCommons.cpp
+  SIMDDeadlockAnalysisNvidia.cpp
   AliasAnalysis.cpp
   AliasAnalysisCounter.cpp
   AliasAnalysisEvaluator.cpp

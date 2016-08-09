@@ -62,6 +62,9 @@ void initializeCodeGen(PassRegistry&);
 /// initializeCodeGen - Initialize all passes linked into the CodeGen library.
 void initializeTarget(PassRegistry&);
 
+void initializeSIMDDeadlockAnalysisNvidiaPass(PassRegistry&);
+void initializeSIMDDeadlockEliminationNvidiaPass(PassRegistry&);
+
 void initializeAAEvalPass(PassRegistry&);
 void initializeAddDiscriminatorsPass(PassRegistry&);
 void initializeADCEPass(PassRegistry&);

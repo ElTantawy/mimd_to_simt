@@ -26,6 +26,7 @@
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/ValueMap.h"
 #include "llvm/PassManager.h"
+#include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
 
@@ -57,6 +58,9 @@ private:
   void remapNamedMDNode(Module *M, NamedMDNode *N);
   MDNode *remapMDNode(Module *M, MDNode *N);
 
+  void lowerGeneric(Function * F, Instruction *I, Value * Op);
+  void lowerStoreGeneric(Function * F, Instruction *I, Value * Op,Type *ty);
+
   typedef ValueMap<GlobalVariable *, GlobalVariable *> GVMapTy;
   typedef ValueMap<Constant *, Value *> ConstantToValueMapTy;
   GVMapTy GVMap;
@@ -73,7 +77,225 @@ INITIALIZE_PASS(
     "Ensure that the global variables are in the global address space", false,
     false)
 
+void GenericToNVVM::lowerStoreGeneric(Function *F, Instruction *cI, Value *Op,Type *ty)
+{
+	if(dyn_cast<BitCastInst>(Op)){
+  	  BitCastInst * BC = dyn_cast<BitCastInst>(Op);
+  	  Type *TypeOfNewCast = PointerType::get(ty,BC->getOperand(0)->getType()->getPointerAddressSpace());
+	  BitCastInst * newBC= new BitCastInst(BC->getOperand(0),TypeOfNewCast);
+      newBC->insertAfter(BC);
+  	  lowerGeneric(F,BC,newBC);
+  	  if(!BC->hasNUsesOrMore(1))
+  		  BC->eraseFromParent();
+	}else if(dyn_cast<AllocaInst>(Op)){
+		AllocaInst * AI = dyn_cast<AllocaInst>(Op);
+		if(AI->getNumOperands()==0){
+			AllocaInst * newAI = new AllocaInst(ty);
+			newAI->insertAfter(AI);
+			newAI->setAlignment(AI->getAlignment());
+			lowerGeneric(F,AI,newAI);
+		}else if(AI->getNumOperands()==1){
+			AllocaInst * newAI = new AllocaInst(ty,AI->getOperand(0));
+			newAI->insertAfter(AI);
+			lowerGeneric(F,AI,newAI);
+		}else{
+			abort();
+		}
+	}
+}
+
+void GenericToNVVM::lowerGeneric(Function *F, Instruction *cI, Value *Op)
+{
+		std::vector<Value *> *Users = new std::vector<Value*>;
+		errs() << "Users for: ";
+		cI->dump();
+		errs() << "\n";
+		for (auto it = cI->user_begin(), et = cI->user_end(); it != et; ++it)
+		{
+			Users->push_back(*it);
+			(*it)->dump();
+		}
+		errs() << "End Users\n";
+		for (auto it = Users->begin(), et = Users->end(); it != et; ++it)
+		{
+			bool found = false;
+			for (auto itt = cI->user_begin(), ett = cI->user_end(); itt != ett; ++itt)
+			{
+				if((*it)==(*itt)){
+					found = true;
+				}
+			}
+			if(!found) continue;
+			if(dyn_cast<Instruction>(*it)){
+				Instruction * Iuser = dyn_cast<Instruction>(*it);
+				if(dyn_cast<Instruction>(Op)==Iuser) continue;
+				cI->dump();
+				Iuser->dump();
+				if(dyn_cast<CallInst>(Iuser)){
+					CallInst * ccI = dyn_cast<CallInst>(Iuser);
+					if(ccI->isAtomicCall()){
+						if(ccI->isAtomicLoadInc()){
+							Type *Tys[] = {Op->getType()};
+							Function *newF = Intrinsic::getDeclaration(F->getParent(),Intrinsic::nvvm_atomic_load_inc_32,Tys);
+							newF->copyAttributesFrom(ccI->getCalledFunction());
+							ccI->setCalledFunction(newF);
+							for(unsigned i=0;i<ccI->getNumArgOperands();i++){
+								if(ccI->getArgOperand(i)==cI){
+									ccI->setArgOperand(i,Op);
+								}
+							}
+							newF->dump();
+						}else{
+							abort();
+						}
+					}else if(ccI->isMemCpy()){
+						Function *newF;
+						if(cI==ccI->getArgOperand(0)){
+							Type *Tys[] = {Op->getType(),ccI->getArgOperand(1)->getType(),ccI->getArgOperand(2)->getType()};
+							newF = Intrinsic::getDeclaration(F->getParent(),Intrinsic::memcpy,Tys);
+						}else{
+							Type *Tys[] = {ccI->getArgOperand(1)->getType(),Op->getType(),ccI->getArgOperand(2)->getType()};
+							newF = Intrinsic::getDeclaration(F->getParent(),Intrinsic::memcpy,Tys);
+						}
+						newF->copyAttributesFrom(ccI->getCalledFunction());
+						ccI->setCalledFunction(newF);
+						for(unsigned i=0;i<ccI->getNumArgOperands();i++){
+							if(ccI->getArgOperand(i)==cI){
+								ccI->setArgOperand(i,Op);
+							}
+						}
+					}
+				}else{
+					if (dyn_cast<LoadInst>(Iuser)) {
+						if(Iuser->getType()->isPointerTy()){
+							LoadInst * LI = dyn_cast<LoadInst>(Iuser);
+							LoadInst *newLI = new LoadInst(Op);
+							newLI->setVolatile(LI->isVolatile());
+							newLI->setAlignment(LI->getAlignment());
+							newLI->insertAfter(LI);
+							lowerGeneric(F,LI,newLI);
+							if(!LI->hasNUsesOrMore(1))
+								LI->eraseFromParent();
+						}else{
+							Iuser->setOperand(0,Op);
+						}
+			      } else if (dyn_cast<StoreInst>(Iuser)) {
+						if(Iuser->getOperand(0)==cI){
+								//check the type of the
+								lowerStoreGeneric(F,Iuser,Iuser->getOperand(1),Op->getType());
+								Iuser->setOperand(0,Op);
+						}else{
+								Iuser->setOperand(1,Op);
+						}
+			      } else if (dyn_cast<AtomicRMWInst>(Iuser)){
+						for(unsigned i=0;i<Iuser->getNumOperands();i++){
+							if(Iuser->getOperand(i)==cI){
+								Iuser->setOperand(i,Op);
+							}
+						}
+			      } else if (dyn_cast<AtomicCmpXchgInst>(Iuser)){
+						for(unsigned i=0;i<Iuser->getNumOperands();i++){
+							if(Iuser->getOperand(i)==cI){
+								Iuser->setOperand(i,Op);
+							}
+						}
+			      }else if(dyn_cast<BitCastInst>(Iuser)){
+			    	  //Create a BitCastInst with both operands non-generic
+			    	  //result is a pointer so call lowerGeneric again
+			    	  BitCastInst * BC = dyn_cast<BitCastInst>(Iuser);
+			    	  Type *TypeOfNewCast = PointerType::get(BC->getType()->getPointerElementType(),Op->getType()->getPointerAddressSpace());
+			    	  BitCastInst * newBC= new BitCastInst(Op,TypeOfNewCast);
+			    	  newBC->insertAfter(BC);
+			    	  lowerGeneric(F,BC,newBC);
+			    	  if(!BC->hasNUsesOrMore(1))
+			    		  BC->eraseFromParent();
+			      }else if(dyn_cast<GetElementPtrInst>(Iuser)){
+			    	  GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(Iuser);
+			    	  SmallVector<Value *, 8> Indices(GEP->idx_begin(), GEP->idx_end());
+			    	  GetElementPtrInst *newGEP = GetElementPtrInst::Create(Op, Indices,"", GEP);
+			    	  newGEP->setIsInBounds(GEP->isInBounds());
+			    	  lowerGeneric(F,GEP,newGEP);
+			    	  if(!GEP->hasNUsesOrMore(1))
+			    		  GEP->eraseFromParent();
+			      }else if(dyn_cast<PHINode>(Iuser)){
+			    	  PHINode * PH = dyn_cast<PHINode>(Iuser);
+			    	  bool allconverted = true;
+			    	  for(unsigned i=0;i<Iuser->getNumOperands();i++){
+			    		  if(Iuser->getOperand(i)==cI){
+			    			  Iuser->setOperand(i,Op);
+			    		  }
+			    		  if(Iuser->getOperand(i)->getType()->getPointerAddressSpace()!=Op->getType()->getPointerAddressSpace()){
+			    			  allconverted = false;
+			    		  }
+			    	  }
+			    	  if(allconverted){
+				    	  Type * newPHIType = Op->getType();
+				    	  PHINode *newPH = PHINode::Create(newPHIType, PH->getNumIncomingValues(),"", PH);
+				    	  for(unsigned i=0; i<PH->getNumOperands();i++){
+				    		  newPH->addIncoming(PH->getIncomingValue(i),PH->getIncomingBlock(i));
+				    	  }
+				    	  lowerGeneric(F,PH,newPH);
+				    	  if(!PH->hasNUsesOrMore(1))
+				    		  PH->eraseFromParent();
+			    	  }
+			      }else{
+						for(unsigned i=0;i<Iuser->getNumOperands();i++){
+							if(Iuser->getOperand(i)==cI){
+								Iuser->setOperand(i,Op);
+							}
+						}
+			      }
+				}
+			}
+		}
+}
+
 bool GenericToNVVM::runOnModule(Module &M) {
+
+	  for (Module::iterator it = M.begin(); it != M.end(); ++it) {
+			Function *F = &*it;
+			if (!F->isDeclaration()) {
+				std::vector<Instruction*>*  ToGenCalls = new std::vector<Instruction*>;
+				for (Function::iterator B = F->begin(), BE = F->end(); B != BE; ++B) {
+					for (BasicBlock::iterator I = B->begin(), IE = B->end(); I != IE; ++I) {
+						if(dyn_cast<CallInst>(I)){
+							CallInst * cI = dyn_cast<CallInst>(I);
+					   		if(!cI->isInlineAsm() && cI->getCalledFunction()){
+					   			if(cI->isIntrinsicCall()){
+					   				if((cI->getCalledFunction()->getIntrinsicID()==Intrinsic::nvvm_ptr_global_to_gen)
+					   						|| (cI->getCalledFunction()->getIntrinsicID()==Intrinsic::nvvm_ptr_shared_to_gen)
+					   						|| (cI->getCalledFunction()->getIntrinsicID()==Intrinsic::nvvm_ptr_local_to_gen)){
+					   					ToGenCalls->push_back(cI);
+					   				}
+					   			}
+					   		}
+						}else if(dyn_cast<AddrSpaceCastInst>(I)){
+							AddrSpaceCastInst * cI = dyn_cast<AddrSpaceCastInst>(I);
+							unsigned addrspace = cI->getOperand(0)->getType()->getPointerAddressSpace();
+							if(addrspace!=llvm::ADDRESS_SPACE_GENERIC  && cI->getDestTy()->getPointerAddressSpace()==llvm::ADDRESS_SPACE_GENERIC){
+			   					ToGenCalls->push_back(cI);
+							}
+
+						}
+					}
+				  }
+				for(auto cit = ToGenCalls->begin(), cet = ToGenCalls->end(); cit!=cet; ++cit){
+					Instruction * cI = (*cit);
+					Value * Op;
+					if(dyn_cast<CallInst>(cI)){
+						Op=dyn_cast<CallInst>(cI)->getArgOperand(0);
+					}else if(dyn_cast<AddrSpaceCastInst>(cI)){
+						Op=dyn_cast<AddrSpaceCastInst>(cI)->getOperand(0);
+					}
+					lowerGeneric(F,cI,Op);
+   					if(!cI->hasNUsesOrMore(1)){
+   						cI->eraseFromParent();
+   					}
+				}
+			}
+	  }
+
+
   // Create a clone of each global variable that has the default address space.
   // The clone is created with the global address space  specifier, and the pair
   // of original global variable and its clone is placed in the GVMap for later

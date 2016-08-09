@@ -358,6 +358,15 @@ void Function::removeAttributes(unsigned i, AttributeSet attrs) {
   setAttributes(PAL);
 }
 
+
+void Function::getReturningBlocks(SmallVectorImpl<const BasicBlock *> * ReturningBlocks) const {
+	 for(Function::const_iterator I = this->begin(), E = this->end(); I != E; ++I){
+		 if (isa<ReturnInst>(I->getTerminator())){
+			 	ReturningBlocks->push_back(I);
+		 }
+	}
+}
+
 // Maintain the GC name for each function in an on-the-side table. This saves
 // allocating an additional word in Function for programs which do not use GC
 // (i.e., most programs) at the cost of increased overhead for clients which do

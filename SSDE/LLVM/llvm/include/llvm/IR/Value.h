@@ -404,6 +404,10 @@ public:
   /// \brief Return true if there is a value handle associated with this value.
   bool hasValueHandle() const { return HasValueHandle; }
 
+  Value * stripPointerMemorySpaceConversion();
+  const Value *stripPointerMemorySpaceConversion() const {
+    return const_cast<Value*>(this)->stripPointerMemorySpaceConversion();
+  }
   /// \brief Strip off pointer casts, all-zero GEPs, and aliases.
   ///
   /// Returns the original uncasted value.  If this is called on a non-pointer

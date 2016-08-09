@@ -47,6 +47,9 @@ namespace {
       if (std::getenv("bar") != (char*) -1)
         return;
 
+      
+      //(void) llvm::createSIMDDeadlockEliminationPass();
+      //(void) llvm::createSIMDDeadlockAnalysisPass();	
       (void) llvm::createAAEvalPass();
       (void) llvm::createAggressiveDCEPass();
       (void) llvm::createAliasAnalysisCounterPass();

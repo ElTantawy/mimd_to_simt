@@ -1278,6 +1278,9 @@ BasicAliasAnalysis::aliasCheck(const Value *V1, uint64_t V1Size,
   V1 = V1->stripPointerCasts();
   V2 = V2->stripPointerCasts();
 
+  V1 = V1->stripPointerMemorySpaceConversion();
+  V2 = V2->stripPointerMemorySpaceConversion();
+
   // Are we checking for alias of the same value?
   // Because we look 'through' phi nodes we could look at "Value" pointers from
   // different iterations. We must therefore make sure that this is not the

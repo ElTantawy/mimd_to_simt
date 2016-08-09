@@ -27,6 +27,7 @@ using namespace llvm;
 /// initializeScalarOptsPasses - Initialize all passes linked into the
 /// ScalarOpts library.
 void llvm::initializeScalarOpts(PassRegistry &Registry) {
+  initializeSIMDDeadlockEliminationNvidiaPass(Registry);
   initializeADCEPass(Registry);
   initializeAlignmentFromAssumptionsPass(Registry);
   initializeSampleProfileLoaderPass(Registry);
@@ -73,6 +74,14 @@ void llvm::initializeScalarOpts(PassRegistry &Registry) {
 
 void LLVMInitializeScalarOpts(LLVMPassRegistryRef R) {
   initializeScalarOpts(*unwrap(R));
+}
+
+void LLVMAddSIMDDeadlockEliminationPass(LLVMPassManagerRef PM) {
+  unwrap(PM)->add(createAggressiveDCEPass());
+}
+
+void LLVMAddSIMDDeadlockEliminationNvidiaPass(LLVMPassManagerRef PM) {
+  unwrap(PM)->add(createAggressiveDCEPass());
 }
 
 void LLVMAddAggressiveDCEPass(LLVMPassManagerRef PM) {

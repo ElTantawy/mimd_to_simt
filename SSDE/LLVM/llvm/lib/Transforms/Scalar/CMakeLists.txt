@@ -1,4 +1,5 @@
 add_llvm_library(LLVMScalarOpts
+  SIMDDeadlockEliminationNvidia.cpp
   ADCE.cpp
   AlignmentFromAssumptions.cpp
   ConstantHoisting.cpp
