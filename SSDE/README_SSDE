@@ -1,0 +1,13 @@
+To build llvm:
+1- mkdir LLVM/build
+2- cd LLVM/build
+3- cmake ../llvm
+4- make
+
+
+Below are the main files that include the implementation of the
+detection and the elimination passes.
+Main Files:
+----------
+LLVM/llvm/lib/Analysis/SIMDDeadlockAnalysisNvidia.cpp
+LLVM/llvm/lib/Transforms/Scalar/SIMDDeadlockEliminationNvidia.cpp
