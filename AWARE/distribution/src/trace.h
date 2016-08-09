@@ -33,6 +33,20 @@
 
 extern unsigned long long  gpu_sim_cycle;
 extern unsigned long long  gpu_tot_sim_cycle;
+extern unsigned long long  max_recvg_time;
+extern unsigned max_st_entries;
+extern unsigned max_rec_entries;
+extern unsigned long long latest_sim_cycle_st;
+extern unsigned long long latest_sim_cycle_rec;
+extern unsigned long long  triggered_timeouts;
+extern unsigned gpu_st_spills;
+extern unsigned gpu_st_fills;
+extern unsigned gpu_rt_spills;
+extern unsigned gpu_rt_fills;
+extern unsigned gpu_st_fills_hits;
+extern unsigned gpu_st_fills_misses;
+extern unsigned gpu_rt_fills_hits;
+extern unsigned gpu_rt_fills_misses;
 
 namespace Trace {
 

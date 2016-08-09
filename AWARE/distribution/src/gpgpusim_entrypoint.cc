@@ -78,6 +78,7 @@ void *gpgpu_sim_thread_sequential(void*)
               g_the_gpu->cycle();
               g_the_gpu->deadlock_check();
           }
+          g_ptx_thread_info_uid_next=0;
           g_the_gpu->print_stats();
           g_the_gpu->update_stats();
           print_simulation_time();

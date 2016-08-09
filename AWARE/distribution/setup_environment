@@ -44,8 +44,8 @@ CC_VERSION=`gcc --version | head -1 | awk '{for(i=1;i<=NF;i++){ if(match($i,/^[0
 CUDA_VERSION_STRING=`$CUDA_INSTALL_PATH/bin/nvcc --version | awk '/release/ {print $5;}' | sed 's/,//'`;
 CUDA_VERSION_NUMBER=`echo $CUDA_VERSION_STRING | sed 's/\./ /' | awk '{printf("%02u%02u", 10*int($1), 10*$2);}'`
 if [ $CUDA_VERSION_NUMBER -gt 4020 -o $CUDA_VERSION_NUMBER -lt 2030  ]; then
-	echo "ERROR ** GPGPU-Sim version $GPGPUSIM_VERSION_STRING not tested with CUDA version $CUDA_VERSION_STRING (please see README)";
-	return;
+	echo "Warning ** GPGPU-Sim version $GPGPUSIM_VERSION_STRING not tested with CUDA version $CUDA_VERSION_STRING (please see README)";
+	#return;
 fi
 
 if [ $# = '1' ] ;
@@ -60,8 +60,8 @@ export QTINC=/usr/include
 # change NVOPENCL_LIBDIR to point to your opencl library directory, usually
 # /usr/lib or /usr/lib64. Not setting this variable will cause gpgpu-sim to
 # build without opencl support.
-if [ -f /usr/lib64/libOpenCL.so ]; then
-	export NVOPENCL_LIBDIR=/usr/lib64;
+if [ -f /usr/lib/x86_64-linux-gnu/libOpenCL.so ]; then
+	export NVOPENCL_LIBDIR=/usr/lib/x86_64-linux-gnu/;
 
 	# change NVOPENCL_INCDIR to point to your opencl include directory.
 	if [ -f /usr/include/CL/cl.h ]; then
@@ -94,6 +94,15 @@ if [ `uname` = "Darwin" ]; then
 else
 	HOSTNAME_DOMAIN=`hostname -d`
 fi
+
+export OPENCL_REMOTE_GPU_HOST=aamodt-pc12.ece.ubc.ca
+export OPENCL_REMOTE_GPU_HOST_USERNAME=ashafiey
+export OPENCL_INTERMEDIATE_GPU_HOST=ssh-linux3.ece.ubc.ca
+export OPENCL_INTERMEDIATE_GPU_HOST_USERNAME=ahmede
+export OPENCL_REMOTE_DIRECTORY="/home/ashafiey/workspace/ashafiey_ahmede-Lenovo-IdeaPad-Y510P_6661/gpgpu_sim_research/LLVM/llvm-ptx-samples/build/bin"
+export OPENCL_INTERMEDIATE_DIRECTORY="workspace/ashafiey_ahmede-Lenovo-IdeaPad-Y510P_6661/gpgpu_sim_research/LLVM/llvm-ptx-samples/build/bin"
+export NVOPENCL_LIBDIR=/opt/intel/intel-opencl-1.2-4.6.0.92/opencl-1.2-4.6.0.92/lib64/
+
 if [ "x$HOSTNAME_DOMAIN" = "xece.ubc.ca" -a "$OPENCL_REMOTE_GPU_HOST" = "" ]; then
 	export OPENCL_REMOTE_GPU_HOST=aamodt-pc05.ece.ubc.ca
 fi

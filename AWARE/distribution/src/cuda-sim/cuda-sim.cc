@@ -55,6 +55,7 @@ void ** g_inst_op_classification_stat= NULL;
 int g_ptx_kernel_count = -1; // used for classification stat collection purposes 
 int g_debug_execution = 0;
 int g_debug_thread_uid = 0;
+int g_debug_cycle = 0;
 addr_t g_debug_pc = 0xBEEF1518;
 // Output debug information to file options
 
@@ -255,8 +256,9 @@ void function_info::ptx_assemble()
       modified = connect_break_targets(); 
    } while (modified == true);
 
+   print_basic_blocks();
+
    if ( g_debug_execution>=50 ) {
-      print_basic_blocks();
       print_basic_block_links();
       print_basic_block_dot();
    }
@@ -264,6 +266,7 @@ void function_info::ptx_assemble()
       print_dominators();
    }
    find_postdominators();
+   update_postdominators();
    find_ipostdominators();
    if ( g_debug_execution>=50 ) {
       print_postdominators();
@@ -1267,7 +1270,7 @@ void ptx_thread_info::ptx_exec_inst( warp_inst_t &inst, unsigned lane_id)
       fflush(m_gpu->get_ptx_inst_debug_file());
    }
 
-   if ( ptx_debug_exec_dump_cond<5>(get_uid(), pc) ) {
+   if ( ptx_debug_exec_dump_cond<5>(get_uid(), pc)  && (g_debug_cycle < (gpu_tot_sim_cycle+gpu_sim_cycle))) {
       dim3 ctaid = get_ctaid();
       dim3 tid = get_tid();
       printf("%u [thd=%u][i=%u] : ctaid=(%u,%u,%u) tid=(%u,%u,%u) icount=%u [pc=%u] (%s:%u - %s)  [0x%llx]\n", 
@@ -1317,11 +1320,11 @@ void ptx_thread_info::ptx_exec_inst( warp_inst_t &inst, unsigned lane_id)
       dump_regs(m_gpu->get_ptx_inst_debug_file());
    }
 
-   if ( g_debug_execution >= 6 ) {
+   if ( g_debug_execution >= 6 && (g_debug_cycle < (gpu_tot_sim_cycle+gpu_sim_cycle))) {
       if ( ptx_debug_exec_dump_cond<6>(get_uid(), pc) )
          dump_modifiedregs(stdout);
    }
-   if ( g_debug_execution >= 10 ) {
+   if ( g_debug_execution >= 10 && (g_debug_cycle < (gpu_tot_sim_cycle+gpu_sim_cycle))) {
       if ( ptx_debug_exec_dump_cond<10>(get_uid(), pc) )
          dump_regs(stdout);
    }
@@ -1694,6 +1697,14 @@ void read_sim_environment_variables()
       fflush(stdout);
       sscanf(dbg_thread,"%d", &g_debug_thread_uid);
    }
+   char *dbg_cycle = getenv("PTX_SIM_DEBUG_CYCLE");
+   if ( dbg_cycle && strlen(dbg_cycle) ) {
+      printf("GPGPU-Sim PTX: printing debug information after cycle %s\n", dbg_cycle );
+      fflush(stdout);
+      sscanf(dbg_cycle,"%d", &g_debug_cycle);
+   }
+
+
    char *dbg_pc = getenv("PTX_SIM_DEBUG_PC");
    if ( dbg_pc && strlen(dbg_pc) ) {
       printf("GPGPU-Sim PTX: printing debug information for instruction with PC = %s\n", dbg_pc );
@@ -1816,7 +1827,11 @@ void  functionalCoreSim::createWarp(unsigned warpId)
     }   
    
    assert(m_thread[warpId*m_warp_size]!=NULL);
-   m_simt_stack[warpId]->launch(m_thread[warpId*m_warp_size]->get_pc(),initialMask);
+   if(m_gpu->simd_model()== POST_DOMINATOR){
+	   m_simt_stack[warpId]->launch(m_thread[warpId*m_warp_size]->get_pc(),initialMask);
+   }else{
+	   m_simt_tables[warpId]->launch(m_thread[warpId*m_warp_size]->get_pc(),initialMask);
+   }
    m_liveThreadCount[warpId]= liveThreadsCount;
 }
 
@@ -1846,7 +1861,7 @@ void functionalCoreSim::executeWarp(unsigned i, bool &allAtBarrier, bool & someO
         execute_warp_inst_t(inst,i);
         if(inst.isatomic()) inst.do_atomic(true);
         if(inst.op==BARRIER_OP || inst.op==MEMORY_BARRIER_OP ) m_warpAtBarrier[i]=true;
-        updateSIMTStack( i, &inst );
+        updateSIMTDivergenceStructures( i, &inst );
     }
     if(m_liveThreadCount[i]>0) someOneLive=true;
     if(!m_warpAtBarrier[i]&& m_liveThreadCount[i]>0) allAtBarrier = false;

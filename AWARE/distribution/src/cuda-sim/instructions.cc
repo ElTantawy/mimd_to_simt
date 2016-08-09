@@ -787,8 +787,12 @@ void add_impl( const ptx_instruction *pI, ptx_thread_info *thread )
       carry = (data.u64 & 0x100000000)>>32;
       break;
    case S64_TYPE:
-      data.s64 = src1_data.s64 + src2_data.s64;
-      break;
+	  if(src2.is_literal()){
+		  data.s64 = src1_data.s64 + src2_data.s32;
+	  }else{
+		  data.s64 = src1_data.s64 + src2_data.s64;
+	  }
+	   break;
    case U8_TYPE:
       data.u64 = (src1_data.u64 & 0xFF) + (src2_data.u64 & 0xFF);
       carry = (data.u64 & 0x100)>>8;
@@ -1016,8 +1020,8 @@ void atom_callback( const inst_t* inst, ptx_thread_info* thread)
       // CAS
    case ATOMIC_CAS:
       {
-
-         ptx_reg_t src3_data;
+    	  //printf("CAS Executed\n");
+    	 ptx_reg_t src3_data;
          const operand_info &src3 = pI->src3();
          src3_data = thread->get_operand_value(src3, dst, to_type, thread, 1);
 
@@ -1237,7 +1241,6 @@ void atom_impl( const ptx_instruction *pI, ptx_thread_info *thread )
 void bar_impl( const ptx_instruction *pIin, ptx_thread_info *thread )
 { 
    ptx_instruction * pI = const_cast<ptx_instruction *>(pIin);
-   printf("BAR_IMPL\n");
    unsigned bar_op = pI->barrier_op();
    unsigned red_op = pI->reduction_op();
    unsigned ctaid = thread->get_cta_uid();
@@ -1285,7 +1288,8 @@ void bar_impl( const ptx_instruction *pIin, ptx_thread_info *thread )
    			   ptx_reg_t op3_data;
    			   op1_data = thread->get_operand_value(op1, op1, U32_TYPE, thread, 1);
    			   op2_data = thread->get_operand_value(op2, op2, U32_TYPE, thread, 1);
-   			   op3_data = thread->get_operand_value(op3, op3, U32_TYPE, thread, 1);
+   			   op3_data = thread->get_operand_value(op3, op3, PRED_TYPE, thread, 1);
+   			   op3_data.u32=!(op3_data.pred & 0x0001);
    			   pI->set_bar_id(op1_data.u32);
    			   pI->set_bar_count(op2_data.u32);
    			   switch(red_op){
@@ -1308,7 +1312,8 @@ void bar_impl( const ptx_instruction *pIin, ptx_thread_info *thread )
    			   ptx_reg_t op1_data;
    			   ptx_reg_t op2_data;
    			   op1_data = thread->get_operand_value(op1, op1, U32_TYPE, thread, 1);
-   			   op2_data = thread->get_operand_value(op2, op2, U32_TYPE, thread, 1);
+   			   op2_data = thread->get_operand_value(op2, op2, PRED_TYPE, thread, 1);
+               op2_data.u32=!(op2_data.pred & 0x0001);
    			   pI->set_bar_id(op1_data.u32);
    			   switch(red_op){
    			   	   case POPC_REDUCTION:
@@ -1336,7 +1341,130 @@ void bar_impl( const ptx_instruction *pIin, ptx_thread_info *thread )
    thread->m_last_dram_callback.instruction = pIin;
 }
 
-void bfe_impl( const ptx_instruction *pI, ptx_thread_info *thread ) { inst_not_implemented(pI); }
+void bfe_impl( const ptx_instruction *pI, ptx_thread_info *thread )
+{
+	ptx_reg_t src1_data;
+	ptx_reg_t src2_data;
+	ptx_reg_t src3_data;
+	ptx_reg_t data;
+
+	const operand_info &dst  = pI->dst();
+	const operand_info &src1 = pI->src1();
+	const operand_info &src2 = pI->src2();
+	const operand_info &src3 = pI->src3();
+
+	unsigned i_type = pI->get_type();
+	src1_data = thread->get_operand_value(src1, dst, i_type, thread, 1);
+	src2_data = thread->get_operand_value(src2, dst, U32_TYPE, thread, 1);
+	src3_data = thread->get_operand_value(src3, dst, U32_TYPE, thread, 1);
+
+	/*
+	if(i_type==S32_TYPE)
+		printf("a.s32=%d\n",src1_data.s32);
+	else if (i_type==S64_TYPE)
+		printf("a.s64=%d\n",src1_data.s64);
+	else if (i_type==U32_TYPE)
+		printf("a.u32=%d\n",src1_data.u32);
+	else if (i_type==U64_TYPE)
+		printf("a.u64=%d\n",src1_data.u64);
+
+	printf("b.u32=%d\n",src2_data.u32);
+	printf("c.u32=%d\n",src3_data.u32);
+	*/
+
+	unsigned msb = (i_type==U32_TYPE || i_type==S32_TYPE) ? 31 : 63;
+	unsigned pos = src2_data.u32 & 0xff;  // pos restricted to 0..255 range
+	unsigned len = src3_data.u32 & 0xff;  // len restricted to 0..255 range
+
+	/*
+	printf("msb=%u\n",msb);
+	printf("pos=%u\n",pos);
+	printf("len=%u\n",len);
+	*/
+
+	bool sbit = 0;
+	if (i_type==U32_TYPE  || i_type==U64_TYPE  || len==0){
+	    sbit = 0;
+	}else{
+		unsigned minIndex = ((pos+len-1)<msb)? pos+len-1:msb;
+		if(i_type==S32_TYPE)
+			sbit = (src1_data.s32 & ( 1 << minIndex )) >> minIndex;
+		else
+			sbit = (src1_data.s64 & ( 1 << minIndex )) >> minIndex;
+
+	}
+	//printf("sbit=%u\n",sbit);
+
+	if(i_type==S32_TYPE)
+		data.s32=0;
+	else
+		data.s64=0;
+
+	for(unsigned i=0; i<msb; i++){
+		unsigned thisBit = 0;
+		if((i<len && pos+i<=msb)){
+			//a[pos+i]
+			if(i_type==S32_TYPE)
+				thisBit = (src1_data.s32 & ( 1 << (pos+i) )) >> (pos+i);
+			else if(i_type==S64_TYPE)
+				thisBit = (src1_data.s64 & ( 1 << (pos+i) )) >> (pos+i);
+			else if(i_type==U32_TYPE)
+				thisBit = (src1_data.u32 & ( 1 << (pos+i) )) >> (pos+i);
+			else if(i_type==U64_TYPE)
+				thisBit = (src1_data.u64 & ( 1 << (pos+i) )) >> (pos+i);
+		}else{
+			thisBit = sbit;
+		}
+
+		//printf("@%d ->thisBit=%u\n",i,thisBit);
+
+		if(i_type==S32_TYPE)
+			data.s32=data.s32+(thisBit<<i);
+		else if(i_type==S64_TYPE)
+			data.s64=data.s64+(thisBit<<i);
+		else if(i_type==U32_TYPE)
+			data.u32=data.u32+(thisBit<<i);
+		else if(i_type==U64_TYPE)
+			data.u64=data.u64+(thisBit<<i);
+	}
+
+	/*
+	if(i_type==S32_TYPE)
+		printf("d.s32=%d\n",data.s32);
+	else if (i_type==S64_TYPE)
+		printf("d.s64=%d\n",data.s64);
+	else if (i_type==U32_TYPE)
+		printf("d.u32=%d\n",data.u32);
+	else if (i_type==U64_TYPE)
+		printf("d.u64=%d\n",data.u64);
+	*/
+	thread->set_operand_value(dst,data, i_type, thread, pI);
+
+	/*
+
+	bfe.type  d, a, b, c;
+
+	.type = { .u32, .u64,
+          	  .s32, .s64 };
+
+
+
+	msb = (.type==.u32 || .type==.s32) ? 31 : 63;
+	pos = b & 0xff;  // pos restricted to 0..255 range
+	len = c & 0xff;  // len restricted to 0..255 range
+
+	if (.type==.u32 || .type==.u64 || len==0)
+	    sbit = 0;
+	else
+	    sbit = a[min(pos+len-1,msb)];
+
+	d = 0;
+	for (i=0; i<=msb; i++) {
+	    d[i] = (i<len && pos+i<=msb) ? a[pos+i] : sbit;
+	}
+	*/
+
+}
 void bfi_impl( const ptx_instruction *pI, ptx_thread_info *thread ) { inst_not_implemented(pI); }
 void bfind_impl( const ptx_instruction *pI, ptx_thread_info *thread ) { inst_not_implemented(pI); }
 
@@ -1423,10 +1551,9 @@ void call_impl( const ptx_instruction *pI, ptx_thread_info *thread )
 
    gpgpu_sim *gpu = thread->get_gpu();
    unsigned callee_pc=0, callee_rpc=0;
-   if( gpu->simd_model() == POST_DOMINATOR ) {
-      thread->get_core()->get_pdom_stack_top_info(thread->get_hw_wid(),&callee_pc,&callee_rpc);
-      assert( callee_pc == thread->get_pc() );
-   }
+   thread->get_core()->get_pdom_stack_top_info(thread->get_hw_wid(),&callee_pc,&callee_rpc);
+   assert( callee_pc == thread->get_pc() );
+
 
    thread->callstack_push(callee_pc + pI->inst_size(), callee_rpc, return_var_src, return_var_dst, call_uid_next++);
 
@@ -3203,7 +3330,7 @@ bool isFloat(int type)
 bool CmpOp( int type, ptx_reg_t a, ptx_reg_t b, unsigned cmpop )
 {
    bool t = false;
-
+   bool td = false;
    switch ( type ) {
    case B16_TYPE: 
       switch (cmpop) {
@@ -3256,7 +3383,7 @@ bool CmpOp( int type, ptx_reg_t a, ptx_reg_t b, unsigned cmpop )
    case S64_TYPE:
       switch (cmpop) {
       case EQ_OPTION: t = (a.s64 == b.s64); break;
-      case NE_OPTION: t = (a.s64 != b.s64); break;
+      case NE_OPTION: t = (a.s64 != b.s64);  break;
       case LT_OPTION: t = (a.s64 < b.s64); break;
       case LE_OPTION: t = (a.s64 <= b.s64); break;
       case GT_OPTION: t = (a.s64 > b.s64); break;

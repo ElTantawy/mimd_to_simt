@@ -1,3 +1,7 @@
+For specific instructions about AWARE, please refer to AWARE_README.
+---------------------------------------------------------------------------
+
+
 Welcome to GPGPU-Sim, a cycle-level simulator modeling contemporary graphics
 processing units (GPUs) running GPU computing workloads written in CUDA or
 OpenCL. Also included in GPGPU-Sim is a performance visualization tool called

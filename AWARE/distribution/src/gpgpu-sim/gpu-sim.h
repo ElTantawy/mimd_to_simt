@@ -1,4 +1,4 @@
-// Copyright (c) 2009-2011, Tor M. Aamodt, Wilson W.L. Fung
+// Copyright (c) 2009-2011, Tor M. Aamodt, Wilson W.L. Fung, Ahmed ElTantawy
 // The University of British Columbia
 // All rights reserved.
 //
@@ -388,7 +388,7 @@ public:
    int shader_clock() const;
    const struct cudaDeviceProp *get_prop() const;
    enum divergence_support_t simd_model() const; 
-
+   const struct shader_core_config *get_shader_config() const;
    unsigned threads_per_core() const;
    bool get_more_cta_left() const;
    kernel_info_t *select_kernel();
@@ -419,6 +419,7 @@ public:
     */
     simt_core_cluster * getSIMTCluster();
 
+    const struct shader_core_config* get_shader_config() {return m_shader_config;}
 
 private:
    // clocks

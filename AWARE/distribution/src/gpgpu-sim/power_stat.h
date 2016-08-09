@@ -1,4 +1,4 @@
-// Copyright (c) 2009-2011, Tor M. Aamodt, Ahmed El-Shafiey, Tayler Hetherington
+// Copyright (c) 2009-2011, Tor M. Aamodt, Ahmed ElTantawy, Tayler Hetherington
 // The University of British Columbia
 // All rights reserved.
 //

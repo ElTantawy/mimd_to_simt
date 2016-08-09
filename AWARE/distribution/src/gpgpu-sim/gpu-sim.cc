@@ -1,5 +1,5 @@
 // Copyright (c) 2009-2011, Tor M. Aamodt, Wilson W.L. Fung, George L. Yuan,
-// Ali Bakhoda, Andrew Turner, Ivan Sham
+// Ali Bakhoda, Andrew Turner, Ivan Sham, Ahmed ElTantawy
 // The University of British Columbia
 // All rights reserved.
 //
@@ -81,6 +81,20 @@ bool g_interactive_debugger_enabled=false;
 
 unsigned long long  gpu_sim_cycle = 0;
 unsigned long long  gpu_tot_sim_cycle = 0;
+unsigned long long max_recvg_time = 0;
+unsigned long long triggered_timeouts = 0;
+unsigned long long  latest_sim_cycle_st = 0;
+unsigned long long  latest_sim_cycle_rec = 0;
+unsigned gpu_st_spills = 0;
+unsigned gpu_st_fills = 0;
+unsigned gpu_rt_spills = 0;
+unsigned gpu_rt_fills = 0;
+unsigned gpu_st_fills_hits = 0;
+unsigned gpu_st_fills_misses = 0;
+unsigned gpu_rt_fills_hits = 0;
+unsigned gpu_rt_fills_misses = 0;
+unsigned max_st_entries = 0;
+unsigned max_rec_entries = 0;
 
 
 // performance counter for stalls due to congestion.
@@ -199,6 +213,16 @@ void shader_core_config::reg_options(class OptionParser * opp)
 {
     option_parser_register(opp, "-gpgpu_simd_model", OPT_INT32, &model, 
                    "1 = post-dominator", "1");
+    option_parser_register(opp, "-gpgpu_simd_rec_time_out", OPT_INT32, &rec_time_out,
+                   "-1 = no reconvergence time out", "-1");
+    option_parser_register(opp, "-gpgpu_simd_rec_size", OPT_INT32, &num_rec_entries,
+                   "number of physical entries in the reconvergence table", "32");
+    option_parser_register(opp, "-gpgpu_simd_st_size", OPT_INT32, &num_st_entries,
+                   "number of physical entries in the splits table", "33");
+    option_parser_register(opp, "-gpgpu_simd_rec_replacement", OPT_INT32, &rec_replacement,
+                   "reconvergence table replacement policy", "0");
+    option_parser_register(opp, "-gpgpu_simd_st_replacement", OPT_INT32, &st_replacement,
+                   "splits table replacement policy", "0");
     option_parser_register(opp, "-gpgpu_shader_core_pipeline", OPT_CSTR, &gpgpu_shader_core_pipeline_opt, 
                    "shader core pipeline config, i.e., {<nthread>:<warpsize>}",
                    "1024:32");
@@ -221,11 +245,11 @@ void shader_core_config::reg_options(class OptionParser * opp)
     option_parser_register(opp, "-gpgpu_cache:dl1PrefL1", OPT_CSTR, &m_L1D_config.m_config_stringPrefL1,
                    "per-shader L1 data cache config "
                    " {<nsets>:<bsize>:<assoc>,<rep>:<wr>:<alloc>:<wr_alloc>,<mshr>:<N>:<merge>,<mq> | none}",
-                   "none" );
+                   "64:128:6,L:L:m:N:H,A:32:8,8" );
     option_parser_register(opp, "-gpgpu_cache:dl1PreShared", OPT_CSTR, &m_L1D_config.m_config_stringPrefShared,
                    "per-shader L1 data cache config "
                    " {<nsets>:<bsize>:<assoc>,<rep>:<wr>:<alloc>:<wr_alloc>,<mshr>:<N>:<merge>,<mq> | none}",
-                   "none" );
+                   "32:128:4,L:L:m:N:H,A:32:8,8" );
     option_parser_register(opp, "-gmem_skip_L1D", OPT_BOOL, &gmem_skip_L1D, 
                    "global memory access skip L1D cache (implements -Xptxas -dlcm=cg, default=no skip)",
                    "0");
@@ -683,6 +707,18 @@ void gpgpu_sim::init()
     // run a CUDA grid on the GPU microarchitecture simulator
     gpu_sim_cycle = 0;
     gpu_sim_insn = 0;
+    max_st_entries = 0;
+    max_rec_entries = 0;
+    max_recvg_time=0;
+    triggered_timeouts=0;
+    gpu_st_spills = 0;
+    gpu_st_fills = 0;
+    gpu_rt_spills = 0;
+    gpu_rt_fills = 0;
+    gpu_st_fills_hits = 0;
+    gpu_st_fills_misses = 0;
+    gpu_rt_fills_hits = 0;
+    gpu_rt_fills_misses = 0;
     last_gpu_sim_insn = 0;
     m_total_cta_launched=0;
 
@@ -750,6 +786,7 @@ void gpgpu_sim::deadlock_check()
              if ( !num_cores )  {
                  printf("GPGPU-Sim uArch: DEADLOCK  shader cores no longer committing instructions [core(# threads)]:\n" );
                  printf("GPGPU-Sim uArch: DEADLOCK  ");
+                 dump_pipeline((0x40|0x4|0x1),5,0);
                  m_cluster[i]->print_not_completed(stdout);
              } else if (num_cores < 8 ) {
                  m_cluster[i]->print_not_completed(stdout);
@@ -885,15 +922,42 @@ void gpgpu_sim::gpu_print_stat()
 
    std::string kernel_info_str = executed_kernel_info_string(); 
    fprintf(statfout, "%s", kernel_info_str.c_str()); 
+   printf("max_recvg_time = %lld\n", max_recvg_time);
+   printf("max_st entries = %lld\n", max_st_entries);
+   printf("max_rec entries = %lld\n", max_rec_entries);
 
+   printf("triggered_timeouts = %lld\n", triggered_timeouts);
    printf("gpu_sim_cycle = %lld\n", gpu_sim_cycle);
    printf("gpu_sim_insn = %lld\n", gpu_sim_insn);
+
+   printf("gpu_st_spills = %lld\n", gpu_st_spills);
+   printf("gpu_rt_spills = %lld\n", gpu_rt_spills);
+   printf("gpu_st_fills = %lld\n", gpu_st_fills);
+   printf("gpu_rt_fills = %lld\n", gpu_rt_fills);
+
+   printf("gpu_st_fills_hits = %lld\n", gpu_st_fills_hits);
+   printf("gpu_st_fills_misses = %lld\n", gpu_st_fills_misses);
+   printf("gpu_rt_fills_hits = %lld\n", gpu_rt_fills_hits );
+   printf("gpu_rt_fills_misses = %lld\n", gpu_rt_fills_misses);
+
+
+   printf("gpu_sim_cycle = %lld\n", gpu_sim_cycle);
+
+
    printf("gpu_ipc = %12.4f\n", (float)gpu_sim_insn / gpu_sim_cycle);
    printf("gpu_tot_sim_cycle = %lld\n", gpu_tot_sim_cycle+gpu_sim_cycle);
    printf("gpu_tot_sim_insn = %lld\n", gpu_tot_sim_insn+gpu_sim_insn);
    printf("gpu_tot_ipc = %12.4f\n", (float)(gpu_tot_sim_insn+gpu_sim_insn) / (gpu_tot_sim_cycle+gpu_sim_cycle));
    printf("gpu_tot_issued_cta = %lld\n", gpu_tot_issued_cta);
 
+
+   double avg_st_entries = m_shader_stats->compue_distribution_avg(m_shader_stats->st_size_distro);
+   printf("avg_st_entries = %f\n",avg_st_entries);
+
+   double avg_rt_entries = m_shader_stats->compue_distribution_avg(m_shader_stats->rt_size_distro);
+   printf("avg_rt_entries = %f\n",avg_rt_entries);
+
+   m_shader_stats->print_reuse_distribution_avg();
 
 
    // performance counter for stalls due to congestion.
@@ -1337,9 +1401,10 @@ void gpgpu_sim::cycle()
 }
 
 
-void shader_core_ctx::dump_warp_state( FILE *fout ) const
+void shader_core_ctx::dump_warp_state( FILE *fout )
 {
    fprintf(fout, "\n");
+   m_barriers.dump();
    fprintf(fout, "per warp functional simulation status:\n");
    for (unsigned w=0; w < m_config->max_warps_per_shader; w++ ) 
        m_warp[w].print(fout);

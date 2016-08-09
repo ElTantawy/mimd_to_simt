@@ -813,6 +813,7 @@ void change_operand_neg( )
 void add_literal_int( int value ) 
 {
    PTX_PARSE_DPRINTF("add_literal_int");
+   printf("add literal int = %d\n",value);
    g_operands.push_back( operand_info(value) );
 }
 

@@ -1,5 +1,5 @@
 // Copyright (c) 2009-2011, Tor M. Aamodt, Wilson W.L. Fung, Andrew Turner,
-// Ali Bakhoda 
+// Ali Bakhoda, Ahmed ElTantawy
 // The University of British Columbia
 // All rights reserved.
 //
@@ -129,7 +129,10 @@ public:
     bool functional_done() const;
     bool waiting(); // not const due to membar
     bool hardware_done() const;
-
+    bool virtualized();
+    bool pending_reconvergence();
+    bool blocked();
+    bool valid();
     bool done_exit() const { return m_done_exit; }
     void set_done_exit() { m_done_exit=true; }
 
@@ -221,6 +224,7 @@ public:
         assert( m_inst_in_pipeline > 0 );
         m_inst_in_pipeline--;
     }
+    void check_time_out();
 
     unsigned get_cta_id() const { return m_cta_id; }
 
@@ -301,14 +305,14 @@ enum concrete_scheduler
 class scheduler_unit { //this can be copied freely, so can be used in std containers.
 public:
     scheduler_unit(shader_core_stats* stats, shader_core_ctx* shader, 
-                   Scoreboard* scoreboard, simt_stack** simt, 
+                   Scoreboard* scoreboard, simt_stack** simt, simt_tables **simt_tb,
                    std::vector<shd_warp_t>* warp, 
                    register_set* sp_out,
                    register_set* sfu_out,
                    register_set* mem_out,
                    int id) 
         : m_supervised_warps(), m_stats(stats), m_shader(shader),
-        m_scoreboard(scoreboard), m_simt_stack(simt), /*m_pipeline_reg(pipe_regs),*/ m_warp(warp),
+        m_scoreboard(scoreboard), m_simt_stack(simt), m_simt_tables(simt_tb), /*m_pipeline_reg(pipe_regs),*/ m_warp(warp),
         m_sp_out(sp_out),m_sfu_out(sfu_out),m_mem_out(mem_out), m_id(id){}
     virtual ~scheduler_unit(){}
     virtual void add_supervised_warp_id(int i) {
@@ -331,7 +335,13 @@ public:
                     const typename std::vector< T >& input_list,
                     const typename std::vector< T >::const_iterator& last_issued_from_input,
                     unsigned num_warps_to_add );
-    
+
+    template < typename T >
+    void order_glrr( typename std::vector< T >& result_list,
+                    const typename std::vector< T >& input_list,
+                    const typename std::vector< T >::const_iterator& last_issued_from_input,
+                    unsigned num_warps_to_add );
+
     enum OrderingType 
     {
         // The item that issued last is prioritized first then the sorted result
@@ -378,6 +388,9 @@ protected:
     // these things should become accessors: but would need a bigger rearchitect of how shader_core_ctx interacts with its parts.
     Scoreboard* m_scoreboard; 
     simt_stack** m_simt_stack;
+
+    simt_tables** m_simt_tables;
+
     //warp_inst_t** m_pipeline_reg;
     std::vector<shd_warp_t>* m_warp;
     register_set* m_sp_out;
@@ -390,13 +403,13 @@ protected:
 class lrr_scheduler : public scheduler_unit {
 public:
 	lrr_scheduler ( shader_core_stats* stats, shader_core_ctx* shader,
-                    Scoreboard* scoreboard, simt_stack** simt,
+                    Scoreboard* scoreboard, simt_stack** simt, simt_tables **simt_tb,
                     std::vector<shd_warp_t>* warp,
                     register_set* sp_out,
                     register_set* sfu_out,
                     register_set* mem_out,
                     int id )
-	: scheduler_unit ( stats, shader, scoreboard, simt, warp, sp_out, sfu_out, mem_out, id ){}
+	: scheduler_unit ( stats, shader, scoreboard, simt, simt_tb, warp, sp_out, sfu_out, mem_out, id ){}
 	virtual ~lrr_scheduler () {}
 	virtual void order_warps ();
     virtual void done_adding_supervised_warps() {
@@ -407,13 +420,13 @@ public:
 class gto_scheduler : public scheduler_unit {
 public:
 	gto_scheduler ( shader_core_stats* stats, shader_core_ctx* shader,
-                    Scoreboard* scoreboard, simt_stack** simt,
+                    Scoreboard* scoreboard, simt_stack** simt, simt_tables **simt_tb,
                     std::vector<shd_warp_t>* warp,
                     register_set* sp_out,
                     register_set* sfu_out,
                     register_set* mem_out,
                     int id )
-	: scheduler_unit ( stats, shader, scoreboard, simt, warp, sp_out, sfu_out, mem_out, id ){}
+	: scheduler_unit ( stats, shader, scoreboard, simt, simt_tb, warp, sp_out, sfu_out, mem_out, id ){}
 	virtual ~gto_scheduler () {}
 	virtual void order_warps ();
     virtual void done_adding_supervised_warps() {
@@ -426,14 +439,14 @@ public:
 class two_level_active_scheduler : public scheduler_unit {
 public:
 	two_level_active_scheduler ( shader_core_stats* stats, shader_core_ctx* shader,
-                          Scoreboard* scoreboard, simt_stack** simt,
+                          Scoreboard* scoreboard, simt_stack** simt, simt_tables **simt_tb,
                           std::vector<shd_warp_t>* warp,
                           register_set* sp_out,
                           register_set* sfu_out,
                           register_set* mem_out,
                           int id,
                           char* config_str )
-	: scheduler_unit ( stats, shader, scoreboard, simt, warp, sp_out, sfu_out, mem_out, id ),
+	: scheduler_unit ( stats, shader, scoreboard, simt, simt_tb, warp, sp_out, sfu_out, mem_out, id ),
 	  m_pending_warps() 
     {
         unsigned inner_level_readin;
@@ -476,7 +489,7 @@ private:
 class swl_scheduler : public scheduler_unit {
 public:
 	swl_scheduler ( shader_core_stats* stats, shader_core_ctx* shader,
-                    Scoreboard* scoreboard, simt_stack** simt,
+                    Scoreboard* scoreboard, simt_stack** simt, simt_tables **simt_tb,
                     std::vector<shd_warp_t>* warp,
                     register_set* sp_out,
                     register_set* sfu_out,
@@ -908,7 +921,7 @@ public:
 
    // individual warp hits barrier
    void warp_reaches_barrier( unsigned cta_id, unsigned warp_id, warp_inst_t* inst);
-
+   void warp_reaches_barrier(unsigned cta_id,unsigned warp_id);
 
    // warp reaches exit 
    void warp_exit( unsigned warp_id );
@@ -916,8 +929,13 @@ public:
    // assertions
    bool warp_waiting_at_barrier( unsigned warp_id ) const;
 
+   unsigned warps_count_at_barrier(int cta_id)
+   {
+	   warp_set_t t = m_cta_to_warps[cta_id] & m_warp_at_barrier;
+	   return t.count();
+   }
    // debug
-   void dump();
+   void dump() ;
 
 private:
    unsigned m_max_cta_per_core;
@@ -1107,6 +1125,7 @@ public:
         return m_dispatch_reg->empty();
     }
 
+    void release_virtual_entries(warp_inst_t &inst);
     virtual void active_lanes_in_pipeline();
     virtual bool stallable() const { return true; }
     bool response_buffer_full() const;
@@ -1119,7 +1138,13 @@ public:
     void get_L1C_sub_stats(struct cache_sub_stats &css) const;
     void get_L1T_sub_stats(struct cache_sub_stats &css) const;
 
-protected:
+    bool shared_cycle( warp_inst_t &inst, mem_stage_stall_type &rc_fail, mem_stage_access_type &fail_type);
+    bool constant_cycle( warp_inst_t &inst, mem_stage_stall_type &rc_fail, mem_stage_access_type &fail_type);
+    bool texture_cycle( warp_inst_t &inst, mem_stage_stall_type &rc_fail, mem_stage_access_type &fail_type);
+    bool memory_cycle( warp_inst_t &inst, mem_stage_stall_type &rc_fail, mem_stage_access_type &fail_type);
+
+ protected:
+
     ldst_unit( mem_fetch_interface *icnt,
                shader_core_mem_fetch_allocator *mf_allocator,
                shader_core_ctx *core, 
@@ -1142,11 +1167,6 @@ protected:
                unsigned sid,
                unsigned tpc );
 
-protected:
-   bool shared_cycle( warp_inst_t &inst, mem_stage_stall_type &rc_fail, mem_stage_access_type &fail_type);
-   bool constant_cycle( warp_inst_t &inst, mem_stage_stall_type &rc_fail, mem_stage_access_type &fail_type);
-   bool texture_cycle( warp_inst_t &inst, mem_stage_stall_type &rc_fail, mem_stage_access_type &fail_type);
-   bool memory_cycle( warp_inst_t &inst, mem_stage_stall_type &rc_fail, mem_stage_access_type &fail_type);
 
    virtual mem_stage_stall_type process_cache_access( cache_t* cache,
                                                       new_addr_type address,
@@ -1266,6 +1286,11 @@ struct shader_core_config : public core_config
     bool gpgpu_clock_gated_reg_file;
     bool gpgpu_clock_gated_lanes;
     enum divergence_support_t model;
+    enum splits_replacement_policy_t st_replacement;
+    enum reconvergence_replacement_policy_t rec_replacement;
+    unsigned rec_time_out;
+    unsigned num_rec_entries;
+    unsigned num_st_entries;
     unsigned n_thread_per_shader;
     unsigned n_regfile_gating_group;
     unsigned max_warps_per_shader; 
@@ -1383,6 +1408,17 @@ struct shader_core_stats_pod {
     unsigned gpu_reg_bank_conflict_stalls;
     unsigned *shader_cycle_distro;
     unsigned *last_shader_cycle_distro;
+    std::map<unsigned/*sid*/,std::map<unsigned/*wid*/,std::map<unsigned/*# of entries*/,long long unsigned/*cycles*/>>>  st_size_distro;
+    std::map<unsigned/*sid*/,std::map<unsigned/*wid*/,std::map<unsigned/*# of entries*/,long long unsigned/*cycles*/>>>  rt_size_distro;
+
+    std::map<unsigned/*sid*/,std::map<unsigned/*wid*/,std::map<unsigned/*distance*/,long long unsigned/*cycles*/>>>  st_reuse_distro;
+    std::map<unsigned/*sid*/,std::map<unsigned/*wid*/,std::map<unsigned/*distance*/,unsigned/*# of updates*/>>>  st_reuse_updates_distro;
+
+    std::map<unsigned/*sid*/,std::map<unsigned/*wid*/,std::map<unsigned/*# of entries*/,long long unsigned/*cycles*/>>>  last_st_size_distro;
+    std::map<unsigned/*sid*/,std::map<unsigned/*wid*/,std::map<unsigned/*# of entries*/,long long unsigned/*cycles*/>>>  last_rt_size_distro;
+    std::map<unsigned/*sid*/,std::map<unsigned/*wid*/,unsigned/*last entry*/>> last_st_num_of_entries;
+    std::map<unsigned/*sid*/,std::map<unsigned/*wid*/,unsigned/*last entry*/>> last_rt_num_of_entries;
+
     unsigned *num_warps_issuable;
     unsigned gpgpu_n_stall_shd_mem;
 
@@ -1399,6 +1435,11 @@ struct shader_core_stats_pod {
     int gpgpu_n_mem_l1_write_allocate; 
     int gpgpu_n_mem_l2_write_allocate;
 
+    int gpgpu_n_mem_bru_st_fill;
+    int gpgpu_n_mem_bru_st_spill;
+    int gpgpu_n_mem_bru_rt_fill;
+    int gpgpu_n_mem_bru_rt_spill;
+
     unsigned made_write_mfs;
     unsigned made_read_mfs;
 
@@ -1406,6 +1447,7 @@ struct shader_core_stats_pod {
     long *n_simt_to_mem; // Interconnect power stats
     long *n_mem_to_simt;
 };
+
 
 class shader_core_stats : public shader_core_stats_pod {
 public:
@@ -1464,6 +1506,15 @@ public:
 
         m_shader_dynamic_warp_issue_distro.resize( config->num_shader() );
         m_shader_warp_slot_issue_distro.resize( config->num_shader() );
+
+        last_st_num_of_entries.clear();
+        last_rt_num_of_entries.clear();
+        st_size_distro.clear();
+        rt_size_distro.clear();
+        last_st_size_distro.clear();
+        last_rt_size_distro.clear();
+        st_reuse_distro.clear();
+        st_reuse_updates_distro.clear();
     }
 
     ~shader_core_stats()
@@ -1496,6 +1547,9 @@ public:
     {
         return m_shader_warp_slot_issue_distro;
     }
+
+    double compue_distribution_avg(std::map<unsigned/*sid*/,std::map<unsigned/*wid*/,std::map<unsigned/*# of entries*/,long long unsigned/*cycles*/>>> & dist);
+    void print_reuse_distribution_avg();
 
 private:
     const shader_core_config *m_config;
@@ -1590,12 +1644,13 @@ public:
     // accessors
     bool fetch_unit_response_buffer_full() const;
     bool ldst_unit_response_buffer_full() const;
+    bool memory_cycle(warp_inst_t &inst, mem_stage_stall_type &rc_fail, mem_stage_access_type &fail_type);
     unsigned get_not_completed() const { return m_not_completed; }
     unsigned get_n_active_cta() const { return m_n_active_cta; }
     unsigned isactive() const {if(m_n_active_cta>0) return 1; else return 0;}
     kernel_info_t *get_kernel() { return m_kernel; }
     unsigned get_sid() const {return m_sid;}
-
+    unsigned get_tpc() const {return m_tpc;}
 // used by functional simulation:
     // modifiers
     virtual void warp_exit( unsigned warp_id );
@@ -1615,6 +1670,11 @@ public:
     void set_max_cta( const kernel_info_t &kernel );
     void warp_inst_complete(const warp_inst_t &inst);
     
+    void warp_reaches_barrier(unsigned cta_id, unsigned warp_id);
+    unsigned warp_count_at_barrier(unsigned cta_id);
+    void release_splits_barrier(unsigned warp_id);
+    int get_cta_id(unsigned warp_id);
+
     // accessors
     std::list<unsigned> get_regs_written( const inst_t &fvt ) const;
     const shader_core_config *get_config() const { return m_config; }
@@ -1630,8 +1690,8 @@ public:
 
 // debug:
     void display_simt_state(FILE *fout, int mask ) const;
-    void display_pipeline( FILE *fout, int print_mem, int mask3bit ) const;
-
+    void display_pipeline( FILE *fout, int print_mem, int mask3bit ) ;
+    void check_time_out();
     void incload_stat() {m_stats->m_num_loadqueued_insn[m_sid]++;}
     void incstore_stat() {m_stats->m_num_storequeued_insn[m_sid]++;}
     void incialu_stat(unsigned active_count,double latency) {
@@ -1736,6 +1796,14 @@ public:
 	 void inc_simt_to_mem(unsigned n_flits){ m_stats->n_simt_to_mem[m_sid] += n_flits; }
 	 bool check_if_non_released_reduction_barrier(warp_inst_t &inst);
 
+	 bool push_to_st_response_fifo(unsigned wid, unsigned entry);
+	 bool push_to_rt_response_fifo(unsigned wid, unsigned entry);
+	 void update_table_stats(unsigned wid);
+	 void updateSIMTDivergenceStructuresInitialization();
+	 bool is_virtualized(unsigned warp_id);
+	 bool pending_reconvergence(unsigned wid);
+	 bool blocked(unsigned wid);
+	 bool valid(unsigned wid);
 	private:
 	 unsigned inactive_lanes_accesses_sfu(unsigned active_count,double latency){
       return  ( ((32-active_count)>>1)*latency) + ( ((32-active_count)>>3)*latency) + ( ((32-active_count)>>3)*latency);
@@ -1769,8 +1837,10 @@ public:
     
     void writeback();
     
+
+
     // used in display_pipeline():
-    void dump_warp_state( FILE *fout ) const;
+    void dump_warp_state( FILE *fout ) ;
     void print_stage(unsigned int stage, FILE *fout) const;
     unsigned long long m_last_inst_gpu_sim_cycle;
     unsigned long long m_last_inst_gpu_tot_sim_cycle;
