@@ -1,0 +1,7 @@
+Thanks for your interest in our work. Below is a very short description of how to use our modified version of GPGPUsim to implement BOWS/DDOS. For more details about the use of GPGPUsim, please refer to the main README file in the distribution folder or to GPGPUsim online manual (http://gpgpu-sim.org/).
+
+
+Citation:
+--------
+Please if you are using this work, cite our MICRO 2016 paper. 
+"Ahmed ElTantawy, Tor Aamodt, Warp Scheduling fo Fine-Grained Synchronization, HPCA 2018"
